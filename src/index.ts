@@ -1,5 +1,11 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+import {
+  PausedAgentRegistry,
+  dispatchContinuations,
+  isQuotaPauseError,
+  type PausedAgentRegistration,
+} from "./paused.js";
 import { planContinuation, isSupportedQuotaFailure } from "./quota.js";
 import { type FormatUsageOptions, UsageSnapshotStore, formatUsageStatus } from "./snapshot.js";
 import {
@@ -15,8 +21,15 @@ import {
 } from "./usage.js";
 
 const STATUS_ID = "openai-usage";
+const MAIN_AGENT_ID = "main";
+const DEFAULT_CONTINUATION_SIGNAL = "Continue.";
+const SUBAGENT_MANAGER_KEY = Symbol.for("pi-subagents:manager");
+
+export const PAUSED_AGENT_EVENT = "openai-limits:paused-agent";
+export const SETTLED_AGENT_EVENT = "openai-limits:settled-agent";
 
 export interface OpenAIUsageExtensionOptions extends FormatUsageOptions {
+  continuationSignal?: string;
   now?: () => number;
   onContinuation?: (resetAt: number) => void;
   scheduler?: TimerScheduler;
@@ -25,12 +38,41 @@ export interface OpenAIUsageExtensionOptions extends FormatUsageOptions {
 
 type UsageContext = Pick<ExtensionContext, "mode" | "model" | "modelRegistry" | "ui" | "signal">;
 
+type SubagentRecord = {
+  id: string;
+  status: string;
+  error?: string;
+  startedAt: number;
+  completedAt?: number;
+  session?: { prompt(text: string): Promise<void> };
+};
+
+type SubagentManagerRegistry = {
+  getRecord(id: string): SubagentRecord | undefined;
+};
+
+type SubagentFailureEvent = { id?: unknown; error?: unknown };
+
+function isPausedAgentRegistration(value: unknown): value is PausedAgentRegistration {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<PausedAgentRegistration>;
+  return typeof candidate.id === "string"
+    && (candidate.role === "subagent" || candidate.role === "main")
+    && typeof candidate.isPaused === "function"
+    && typeof candidate.continue === "function";
+}
+
 export function createPiOpenAiLimits(options: OpenAIUsageExtensionOptions = {}) {
   return function piOpenAiLimits(pi: ExtensionAPI): void {
     const now = options.now ?? Date.now;
+    const continuationSignal = options.continuationSignal ?? DEFAULT_CONTINUATION_SIGNAL;
     const store = new UsageSnapshotStore(options.transport ?? createOpenAIUsageTransport(), now);
     const timers = new ContinuationTimerRegistry(options.scheduler ?? systemTimerScheduler, now);
+    const pausedAgents = new PausedAgentRegistry();
+    let activeCtx: UsageContext | undefined;
+    let busUnsubscribers: Array<() => void> = [];
     let generation = 0;
+    let mainPaused = false;
     let refreshInFlight: { generation: number; promise: Promise<boolean> } | undefined;
 
     const render = (ctx: UsageContext): void => {
@@ -56,6 +98,8 @@ export function createPiOpenAiLimits(options: OpenAIUsageExtensionOptions = {}) 
 
     const deactivate = (ctx: UsageContext): void => {
       generation++;
+      mainPaused = false;
+      pausedAgents.clear();
       timers.clear();
       store.clear();
       ctx.ui.setStatus(STATUS_ID, undefined);
@@ -101,8 +145,88 @@ export function createPiOpenAiLimits(options: OpenAIUsageExtensionOptions = {}) 
       return promise;
     };
 
+    const registerMainPause = (): void => {
+      mainPaused = true;
+      pausedAgents.register({
+        id: MAIN_AGENT_ID,
+        role: "main",
+        isPaused: () => mainPaused,
+        continue: () => pi.sendUserMessage(continuationSignal, { deliverAs: "followUp" }),
+      });
+    };
+
+    const registerSubagentPause = (event: SubagentFailureEvent): boolean => {
+      if (typeof event.id !== "string" || !isQuotaPauseError(event.error)) return false;
+      const manager = (globalThis as unknown as { [key: symbol]: SubagentManagerRegistry | undefined })[
+        SUBAGENT_MANAGER_KEY
+      ];
+      const record = manager?.getRecord(event.id);
+      const session = record?.session;
+      if (!record || !session) return false;
+
+      pausedAgents.register({
+        id: record.id,
+        role: "subagent",
+        isPaused: () => record.status === "error" && isQuotaPauseError(record.error),
+        keepAlive: () => {
+          if (record.status === "error") record.completedAt = now();
+        },
+        continue: async () => {
+          record.status = "running";
+          record.startedAt = now();
+          record.completedAt = undefined;
+          record.error = undefined;
+          try {
+            await session.prompt(continuationSignal);
+            record.status = "completed";
+            record.completedAt = now();
+          } catch (error) {
+            record.status = "error";
+            record.error = error instanceof Error ? error.message : String(error);
+            record.completedAt = now();
+            throw error;
+          }
+        },
+      });
+      return true;
+    };
+
+    const unbindBus = (): void => {
+      for (const unsubscribe of busUnsubscribers) unsubscribe();
+      busUnsubscribers = [];
+    };
+
+    const bindBus = (): void => {
+      unbindBus();
+      busUnsubscribers = [
+        pi.events.on(PAUSED_AGENT_EVENT, (event) => {
+          if (isPausedAgentRegistration(event)) pausedAgents.register(event);
+        }),
+        pi.events.on(SETTLED_AGENT_EVENT, (event) => {
+          const id = event && typeof event === "object" ? (event as { id?: unknown }).id : undefined;
+          if (typeof id === "string") pausedAgents.remove(id);
+        }),
+        pi.events.on("subagents:started", (event) => {
+          const id = event && typeof event === "object" ? (event as { id?: unknown }).id : undefined;
+          if (typeof id === "string") pausedAgents.remove(id);
+        }),
+        pi.events.on("subagents:completed", (event) => {
+          const id = event && typeof event === "object" ? (event as { id?: unknown }).id : undefined;
+          if (typeof id === "string") pausedAgents.remove(id);
+        }),
+        pi.events.on("subagents:failed", (event) => {
+          if (!registerSubagentPause(event as SubagentFailureEvent) || !activeCtx) return;
+          const requestedGeneration = generation;
+          void handleQuotaFailure(activeCtx, requestedGeneration).catch(() => {});
+        }),
+      ];
+    };
+
     pi.on("session_start", async (_event, ctx) => {
+      activeCtx = ctx;
+      unbindBus();
       deactivate(ctx);
+      bindBus();
       await refresh(ctx, true);
     });
 
@@ -113,8 +237,17 @@ export function createPiOpenAiLimits(options: OpenAIUsageExtensionOptions = {}) 
     });
 
     pi.on("before_agent_start", (_event, ctx) => {
+      mainPaused = false;
+      pausedAgents.remove(MAIN_AGENT_ID);
       store.markStale();
       render(ctx);
+    });
+
+    pi.on("message_end", (event) => {
+      if (event.message.role !== "assistant") return;
+      if (event.message.stopReason === "error" || event.message.stopReason === "aborted") return;
+      mainPaused = false;
+      pausedAgents.remove(MAIN_AGENT_ID);
     });
 
     pi.on("agent_settled", async (_event, ctx) => {
@@ -139,28 +272,36 @@ export function createPiOpenAiLimits(options: OpenAIUsageExtensionOptions = {}) 
       timers.schedule(
         plan,
         (fired) => {
-          try {
-            options.onContinuation?.(fired.resetAt);
-          } catch {
-            // Continuation observers must not break timer cleanup.
-          }
-          try {
-            pi.events.emit("openai-limits:continuation", { resetAt: fired.resetAt });
-          } catch {
-            // Inter-extension observers must not break timer cleanup.
-          }
+          void dispatchContinuations(pausedAgents).then((dispatch) => {
+            try {
+              options.onContinuation?.(fired.resetAt);
+            } catch {
+              // Continuation observers must not break dispatch.
+            }
+            try {
+              pi.events.emit("openai-limits:continuation", { resetAt: fired.resetAt, ...dispatch });
+            } catch {
+              // Inter-extension observers must not break dispatch.
+            }
+          }).catch(() => {});
         },
-        () => render(ctx),
+        () => {
+          pausedAgents.keepAlive();
+          render(ctx);
+        },
       );
     };
 
     pi.on("after_provider_response", (event, ctx) => {
       if (!isSupportedQuotaFailure(event.status, ctx.model?.provider) || ctx.mode !== "tui") return;
+      registerMainPause();
       const requestedGeneration = generation;
       void handleQuotaFailure(ctx, requestedGeneration).catch(() => {});
     });
 
     pi.on("session_shutdown", (_event, ctx) => {
+      activeCtx = undefined;
+      unbindBus();
       deactivate(ctx);
     });
   };
@@ -168,6 +309,17 @@ export function createPiOpenAiLimits(options: OpenAIUsageExtensionOptions = {}) 
 
 export default createPiOpenAiLimits();
 
+export {
+  PausedAgentRegistry,
+  dispatchContinuations,
+  isQuotaPauseError,
+} from "./paused.js";
+export type {
+  ContinuationAdapter,
+  ContinuationDispatchResult,
+  PausedAgentRegistration,
+  PausedAgentRole,
+} from "./paused.js";
 export { CONTINUATION_GRACE_MS, MAX_TIMER_DELAY_MS, isSupportedQuotaFailure, planContinuation } from "./quota.js";
 export { formatCompactAge, formatUsageStatus, REFRESH_COOLDOWN_MS, UsageSnapshotStore } from "./snapshot.js";
 export { ContinuationTimerRegistry, formatContinuationCountdown, systemTimerScheduler } from "./timer.js";

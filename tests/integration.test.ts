@@ -1,7 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 
-import { createPiOpenAiLimits } from "../src/index.js";
+import {
+  PAUSED_AGENT_EVENT,
+  SETTLED_AGENT_EVENT,
+  createPiOpenAiLimits,
+} from "../src/index.js";
 import { REFRESH_COOLDOWN_MS } from "../src/snapshot.js";
 import type { TimerScheduler } from "../src/timer.js";
 
@@ -25,13 +29,22 @@ type FakeContext = ReturnType<typeof createContext>;
 
 function createHarness(factory: ReturnType<typeof createPiOpenAiLimits>) {
   const handlers = new Map<string, Handler[]>();
+  const busHandlers = new Map<string, Array<(data: unknown) => void>>();
   const emitted: Array<{ name: string; data: unknown }> = [];
   const pi = {
     events: {
       emit(name: string, data: unknown) {
         emitted.push({ name, data });
+        for (const handler of busHandlers.get(name) ?? []) handler(data);
+      },
+      on(name: string, handler: (data: unknown) => void) {
+        busHandlers.set(name, [...(busHandlers.get(name) ?? []), handler]);
+        return () => {
+          busHandlers.set(name, (busHandlers.get(name) ?? []).filter((candidate) => candidate !== handler));
+        };
       },
     },
+    sendUserMessage: vi.fn(),
     on(name: string, handler: Handler) {
       handlers.set(name, [...(handlers.get(name) ?? []), handler]);
     },
@@ -39,6 +52,10 @@ function createHarness(factory: ReturnType<typeof createPiOpenAiLimits>) {
   factory(pi as unknown as ExtensionAPI);
   return {
     emitted,
+    sendUserMessage: pi.sendUserMessage,
+    busEmit(name: string, data: unknown) {
+      pi.events.emit(name, data);
+    },
     async emit(name: string, ctx: FakeContext, event: Record<string, unknown> = {}) {
       for (const handler of handlers.get(name) ?? []) await handler(event, ctx);
     },
@@ -176,10 +193,15 @@ describe("Pi Lifecycle, Authentication, and Status Integration", () => {
     expect(ctx.statuses.get("openai-usage")).toContain("continue in 1h 5m 0s");
 
     scheduler.fireTimeout();
-    expect(onContinuation).toHaveBeenCalledWith((START + 3_600_000) / 1000);
+    await vi.waitFor(() => expect(onContinuation).toHaveBeenCalledWith((START + 3_600_000) / 1000));
+    expect(harness.sendUserMessage).toHaveBeenCalledWith("Continue.", { deliverAs: "followUp" });
     expect(harness.emitted).toEqual([{
       name: "openai-limits:continuation",
-      data: { resetAt: (START + 3_600_000) / 1000 },
+      data: {
+        resetAt: (START + 3_600_000) / 1000,
+        dispatched: ["main"],
+        failed: [],
+      },
     }]);
   });
 
@@ -284,6 +306,112 @@ describe("Pi Lifecycle, Authentication, and Status Integration", () => {
     await harness.emit("session_shutdown", ctx);
     expect(scheduler.timeouts.size).toBe(0);
     expect(scheduler.intervals.size).toBe(0);
+  });
+
+  it("AT-5 dispatches Continuation Signals to Subagents before main Paused Agent with context reuse", async () => {
+    const calls: string[] = [];
+    const scheduler = new FakeScheduler();
+    const transport = vi.fn(async () => exhaustedPayload);
+    const ctx = createContext();
+    const harness = createHarness(createPiOpenAiLimits({ transport, scheduler, now: () => START }));
+    const subagentContext = { work: "subagent-session" };
+    const mainContext = { work: "main-session" };
+
+    await harness.emit("session_start", ctx);
+    harness.busEmit(PAUSED_AGENT_EVENT, {
+      id: "sub-2",
+      role: "subagent",
+      isPaused: () => true,
+      continue: () => { calls.push(`sub-2:${subagentContext.work}`); },
+    });
+    harness.busEmit(PAUSED_AGENT_EVENT, {
+      id: "sub-1",
+      role: "subagent",
+      isPaused: () => true,
+      continue: () => { calls.push(`sub-1:${subagentContext.work}`); },
+    });
+    harness.busEmit(PAUSED_AGENT_EVENT, {
+      id: "main-custom",
+      role: "main",
+      isPaused: () => true,
+      continue: () => { calls.push(`main:${mainContext.work}`); },
+    });
+    await harness.emit("after_provider_response", ctx, { status: 429, headers: {} });
+    await vi.waitFor(() => expect(scheduler.timeouts.size).toBe(1));
+    await harness.emit("message_end", ctx, { message: { role: "assistant", stopReason: "stop" } });
+
+    scheduler.fireTimeout();
+    await vi.waitFor(() => expect(calls).toHaveLength(3));
+
+    expect(calls).toEqual([
+      "sub-2:subagent-session",
+      "sub-1:subagent-session",
+      "main:main-session",
+    ]);
+    expect(harness.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("AT-6 performs no Continuation Signal or model request after Paused Agent state changes", async () => {
+    const adapter = vi.fn();
+    const scheduler = new FakeScheduler();
+    const transport = vi.fn(async () => exhaustedPayload);
+    const ctx = createContext();
+    const harness = createHarness(createPiOpenAiLimits({ transport, scheduler, now: () => START }));
+
+    await harness.emit("session_start", ctx);
+    harness.busEmit(PAUSED_AGENT_EVENT, {
+      id: "sub",
+      role: "subagent",
+      isPaused: () => true,
+      continue: adapter,
+    });
+    await harness.emit("after_provider_response", ctx, { status: 429, headers: {} });
+    await vi.waitFor(() => expect(scheduler.timeouts.size).toBe(1));
+    harness.busEmit(SETTLED_AGENT_EVENT, { id: "sub" });
+    await harness.emit("message_end", ctx, { message: { role: "assistant", stopReason: "stop" } });
+
+    scheduler.fireTimeout();
+    await vi.waitFor(() => expect(harness.emitted.some((entry) => entry.name === "openai-limits:continuation")).toBe(true));
+
+    expect(adapter).not.toHaveBeenCalled();
+    expect(harness.sendUserMessage).not.toHaveBeenCalled();
+    expect(harness.emitted.at(-1)?.data).toMatchObject({ dispatched: [], failed: [] });
+  });
+
+  it("IT-3 bridges quota-failed Subagent session into ordered continuation", async () => {
+    const managerKey = Symbol.for("pi-subagents:manager");
+    const previous = (globalThis as Record<PropertyKey, unknown>)[managerKey];
+    const scheduler = new FakeScheduler();
+    const session = { prompt: vi.fn(async () => {}) };
+    const record = {
+      id: "subagent-1",
+      status: "error",
+      error: "The usage limit has been reached",
+      startedAt: START - 1000,
+      completedAt: START - 500,
+      session,
+    };
+    (globalThis as Record<PropertyKey, unknown>)[managerKey] = {
+      getRecord: (id: string) => id === record.id ? record : undefined,
+    };
+
+    try {
+      const transport = vi.fn(async () => exhaustedPayload);
+      const ctx = createContext();
+      const harness = createHarness(createPiOpenAiLimits({ transport, scheduler, now: () => START }));
+      await harness.emit("session_start", ctx);
+
+      harness.busEmit("subagents:failed", { id: record.id, error: record.error });
+      await vi.waitFor(() => expect(scheduler.timeouts.size).toBe(1));
+      expect(record.completedAt).toBe(START);
+
+      scheduler.fireTimeout();
+      await vi.waitFor(() => expect(session.prompt).toHaveBeenCalledWith("Continue."));
+      expect(record.status).toBe("completed");
+    } finally {
+      if (previous === undefined) delete (globalThis as Record<PropertyKey, unknown>)[managerKey];
+      else (globalThis as Record<PropertyKey, unknown>)[managerKey] = previous;
+    }
   });
 
   it("IT-1 discards delayed Pi OAuth Access resolution after provider deactivation", async () => {
