@@ -1,0 +1,34 @@
+{
+  "name": "pi-openai-limits",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pi extension for displaying OpenAI usage limits and resuming agents after resets.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "openai"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage.enabled --coverage.reporter=lcov --coverage.reportsDirectory=reports/coverage"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@vitest/coverage-v8": "^4.1.11",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  }
+}
