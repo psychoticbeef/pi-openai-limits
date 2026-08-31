@@ -3,11 +3,18 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createPiOpenAiLimits } from "../src/index.js";
 import { REFRESH_COOLDOWN_MS } from "../src/snapshot.js";
+import type { TimerScheduler } from "../src/timer.js";
 
 const START = Date.UTC(2025, 0, 1, 12, 0, 0);
 const payload = {
   rate_limit: {
     primary_window: { used_percent: 20, reset_at: (START + 3_600_000) / 1000, limit_window_seconds: 18_000 },
+    secondary_window: { used_percent: 55, reset_at: (START + 604_800_000) / 1000, limit_window_seconds: 604_800 },
+  },
+};
+const exhaustedPayload = {
+  rate_limit: {
+    primary_window: { used_percent: 100, reset_at: (START + 3_600_000) / 1000, limit_window_seconds: 18_000 },
     secondary_window: { used_percent: 55, reset_at: (START + 604_800_000) / 1000, limit_window_seconds: 604_800 },
   },
 };
@@ -18,17 +25,54 @@ type FakeContext = ReturnType<typeof createContext>;
 
 function createHarness(factory: ReturnType<typeof createPiOpenAiLimits>) {
   const handlers = new Map<string, Handler[]>();
+  const emitted: Array<{ name: string; data: unknown }> = [];
   const pi = {
+    events: {
+      emit(name: string, data: unknown) {
+        emitted.push({ name, data });
+      },
+    },
     on(name: string, handler: Handler) {
       handlers.set(name, [...(handlers.get(name) ?? []), handler]);
     },
   };
   factory(pi as unknown as ExtensionAPI);
   return {
-    async emit(name: string, ctx: FakeContext) {
-      for (const handler of handlers.get(name) ?? []) await handler({}, ctx);
+    emitted,
+    async emit(name: string, ctx: FakeContext, event: Record<string, unknown> = {}) {
+      for (const handler of handlers.get(name) ?? []) await handler(event, ctx);
     },
   };
+}
+
+class FakeScheduler implements TimerScheduler {
+  nextId = 1;
+  timeouts = new Map<number, { callback: () => void; delayMs: number }>();
+  intervals = new Map<number, () => void>();
+
+  setTimeout(callback: () => void, delayMs: number): number {
+    const id = this.nextId++;
+    this.timeouts.set(id, { callback, delayMs });
+    return id;
+  }
+
+  clearTimeout(handle: unknown): void {
+    this.timeouts.delete(handle as number);
+  }
+
+  setInterval(callback: () => void): number {
+    const id = this.nextId++;
+    this.intervals.set(id, callback);
+    return id;
+  }
+
+  clearInterval(handle: unknown): void {
+    this.intervals.delete(handle as number);
+  }
+
+  fireTimeout(): void {
+    this.timeouts.values().next().value?.callback();
+  }
 }
 
 function createContext(options: {
@@ -106,6 +150,140 @@ describe("Pi Lifecycle, Authentication, and Status Integration", () => {
     await harness.emit("agent_settled", ctx);
     expect(transport).toHaveBeenCalledTimes(2);
     expect(ctx.statuses.get("openai-usage")).not.toContain("ago");
+  });
+
+  it("AT-3 bypasses Refresh Cooldown and schedules reset-plus-five-minute Continuation Timer", async () => {
+    const scheduler = new FakeScheduler();
+    const transport = vi.fn(async () => exhaustedPayload);
+    const onContinuation = vi.fn();
+    const ctx = createContext();
+    const harness = createHarness(createPiOpenAiLimits({
+      transport,
+      scheduler,
+      onContinuation,
+      now: () => START,
+      timeZone: "UTC",
+      locale: "en-GB",
+    }));
+
+    await harness.emit("session_start", ctx);
+    await harness.emit("after_provider_response", ctx, { status: 429, headers: {} });
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(scheduler.timeouts.size).toBe(1));
+
+    expect(scheduler.timeouts.size).toBe(1);
+    expect([...scheduler.timeouts.values()][0]?.delayMs).toBe(3_900_000);
+    expect(ctx.statuses.get("openai-usage")).toContain("continue in 1h 5m 0s");
+
+    scheduler.fireTimeout();
+    expect(onContinuation).toHaveBeenCalledWith((START + 3_600_000) / 1000);
+    expect(harness.emitted).toEqual([{
+      name: "openai-limits:continuation",
+      data: { resetAt: (START + 3_600_000) / 1000 },
+    }]);
+  });
+
+  it("AT-4 deduplicates Continuation Timer and keeps live countdown alongside Usage Snapshot", async () => {
+    let now = START;
+    const scheduler = new FakeScheduler();
+    const transport = vi.fn(async () => exhaustedPayload);
+    const ctx = createContext();
+    const harness = createHarness(createPiOpenAiLimits({ transport, scheduler, now: () => now }));
+
+    await harness.emit("session_start", ctx);
+    await harness.emit("after_provider_response", ctx, { status: 429, headers: {} });
+    await vi.waitFor(() => expect(scheduler.timeouts.size).toBe(1));
+    await harness.emit("after_provider_response", ctx, { status: 429, headers: {} });
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(3));
+
+    expect(scheduler.timeouts.size).toBe(1);
+    expect(scheduler.intervals.size).toBe(1);
+    expect(ctx.statuses.get("openai-usage")).toMatch(/5h 100%.*continue in 1h 5m 0s/);
+
+    now += 1000;
+    scheduler.intervals.values().next().value?.();
+    expect(ctx.statuses.get("openai-usage")).toContain("continue in 1h 4m 59s");
+  });
+
+  it("AT-3 schedules from known Usage Snapshot when immediate refresh fails", async () => {
+    let requests = 0;
+    const scheduler = new FakeScheduler();
+    const transport = vi.fn(async () => {
+      requests++;
+      if (requests === 2) throw new Error("temporary OpenAI Usage failure");
+      return exhaustedPayload;
+    });
+    const ctx = createContext();
+    const harness = createHarness(createPiOpenAiLimits({ transport, scheduler, now: () => START }));
+
+    await harness.emit("session_start", ctx);
+    await harness.emit("after_provider_response", ctx, { status: 429, headers: {} });
+    await vi.waitFor(() => expect(scheduler.timeouts.size).toBe(1));
+
+    expect(transport).toHaveBeenCalledTimes(2);
+    expect(ctx.statuses.get("openai-usage")).toContain("ago");
+    expect(ctx.statuses.get("openai-usage")).toContain("continue in");
+  });
+
+  it("IT-2 starts quota recovery without blocking provider response handling", async () => {
+    let resolveRefresh!: (value: typeof exhaustedPayload) => void;
+    const deferredRefresh = new Promise<typeof exhaustedPayload>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    const scheduler = new FakeScheduler();
+    const transport = vi.fn()
+      .mockResolvedValueOnce(exhaustedPayload)
+      .mockImplementationOnce(async () => deferredRefresh);
+    const ctx = createContext();
+    const harness = createHarness(createPiOpenAiLimits({ transport, scheduler, now: () => START }));
+
+    await harness.emit("session_start", ctx);
+    await harness.emit("after_provider_response", ctx, { status: 429, headers: {} });
+
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(2));
+    expect(scheduler.timeouts.size).toBe(0);
+    resolveRefresh(exhaustedPayload);
+    await vi.waitFor(() => expect(scheduler.timeouts.size).toBe(1));
+  });
+
+  it("IT-2 preserves active Continuation Timer across eligible model changes and Reset Window grace", async () => {
+    let now = START;
+    const scheduler = new FakeScheduler();
+    const transport = vi.fn(async () => exhaustedPayload);
+    const ctx = createContext();
+    const harness = createHarness(createPiOpenAiLimits({ transport, scheduler, now: () => now }));
+
+    await harness.emit("session_start", ctx);
+    await harness.emit("after_provider_response", ctx, { status: 429, headers: {} });
+    await vi.waitFor(() => expect(scheduler.timeouts.size).toBe(1));
+
+    ctx.model.id = "gpt-other";
+    await harness.emit("model_select", ctx);
+    expect(scheduler.timeouts.size).toBe(1);
+
+    now = START + 3_660_000;
+    await harness.emit("after_provider_response", ctx, { status: 429, headers: {} });
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(4));
+    await vi.waitFor(() => expect(ctx.statuses.get("openai-usage")).toContain("continue in 4m 00s"));
+    expect(scheduler.timeouts.size).toBe(1);
+  });
+
+  it("IT-2 leaves unrelated provider failures untouched and cleans Continuation Timer on shutdown", async () => {
+    const scheduler = new FakeScheduler();
+    const transport = vi.fn(async () => exhaustedPayload);
+    const ctx = createContext();
+    const harness = createHarness(createPiOpenAiLimits({ transport, scheduler, now: () => START }));
+
+    await harness.emit("session_start", ctx);
+    await harness.emit("after_provider_response", ctx, { status: 500, headers: {} });
+    expect(transport).toHaveBeenCalledOnce();
+    expect(scheduler.timeouts.size).toBe(0);
+
+    await harness.emit("after_provider_response", ctx, { status: 429, headers: {} });
+    await vi.waitFor(() => expect(scheduler.timeouts.size).toBe(1));
+    await harness.emit("session_shutdown", ctx);
+    expect(scheduler.timeouts.size).toBe(0);
+    expect(scheduler.intervals.size).toBe(0);
   });
 
   it("IT-1 discards delayed Pi OAuth Access resolution after provider deactivation", async () => {
