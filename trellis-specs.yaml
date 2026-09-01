@@ -29,16 +29,17 @@ glossary:
     - term: Usage Snapshot
       definition: The last successfully fetched OpenAI Usage.
 counters:
-    AS: 3
-    AT: 6
+    AS: 4
+    AT: 7
     CC: 3
-    DD: 6
-    IT: 3
-    US: 3
-    UT: 6
+    DD: 7
+    IT: 4
+    US: 4
+    UT: 7
     ac:US-1: 4
     ac:US-2: 4
     ac:US-3: 4
+    ac:US-4: 3
 cross_cutting:
     - id: CC-1
       kind: cross_cutting
@@ -424,3 +425,78 @@ stories:
             tests:
                 - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > AT-6 performs no Continuation Signal or model request after Paused Agent state changes
             recorded_at: "2026-08-31T22:45:35Z"
+    - id: US-4
+      kind: story
+      title: Start Paused Agents Without Serial Waiting
+      body: After Continuation Timer expiry, start every live Paused Agent Continuation Adapter without waiting for an earlier Paused Agent run to finish.
+      status: done
+      paths:
+        - src/paused.ts
+        - tests/paused.test.ts
+        - tests/integration.test.ts
+      acceptance_criteria:
+        - id: US-4.AC-1
+          given: multiple Subagents remain Paused Agent instances when the Continuation Timer expires
+          when: continuation begins
+          then: each Subagent Continuation Adapter starts in stable registration order without waiting for an earlier Subagent run to finish
+        - id: US-4.AC-2
+          given: Subagent Continuation Adapters have started and the main Paused Agent remains paused
+          when: Subagent runs are still in flight
+          then: the main Paused Agent Continuation Adapter starts after all Subagent Continuation Adapters without waiting for their completion
+        - id: US-4.AC-3
+          given: one Paused Agent Continuation Adapter rejects
+          when: other Continuation Adapters have already started
+          then: all outcomes are collected independently and one failure does not block another Continuation Signal
+      depends_on:
+        - target: CC-3
+          pinned_hash: f76e07e585410a8a81dee45450204df72f5c10b0c3befef7fdba13709894b544
+      approved_content_hash: dd981dc8848238f8f2251406f45fc977f794736a5584db66a4fac6f7e5a2e052
+      children:
+        - id: AS-4
+          kind: arch
+          title: Non-Blocking Ordered Continuation Architecture
+          body: Revalidate Paused Agent instances in deterministic Subagent-first order, invoke each Continuation Adapter without awaiting prior adapter completion, then collect all outcomes without disrupting launch order.
+          approved_content_hash: cce0d1de663bb3c6628d502bfca6027e12f1dbfb2277d8207557a378425268eb
+          approved_parent_hash: dd981dc8848238f8f2251406f45fc977f794736a5584db66a4fac6f7e5a2e052
+          children:
+            - id: DD-7
+              kind: detail_design
+              title: Concurrent Continuation Launch and Outcome Collection
+              body: Build ordered live Paused Agent candidates, remove each before dispatch, invoke every Continuation Adapter immediately while retaining its promise, and await collected promises only after all Continuation Adapters have started. Preserve deterministic dispatched and failed result ordering.
+              approved_content_hash: 8bb499e10691809eea3f1a2ff89397a3e935af6a4835bef31f54626c85d22246
+              approved_parent_hash: cce0d1de663bb3c6628d502bfca6027e12f1dbfb2277d8207557a378425268eb
+              children:
+                - id: UT-7
+                  kind: unit_test
+                  title: Non-Blocking Dispatch and Stable Outcomes
+                  body: Cover deferred Continuation Adapters proving all starts occur before any settlement, Subagent-first invocation order including the main Paused Agent, deterministic result ordering, state revalidation, synchronous throws, asynchronous rejections, and empty registry no-op.
+                  approved_content_hash: 8e804d8b1e0c657725f9c5d5537eb37f77ab4a5fb74554b2c1d856cb346f1de3
+                  approved_parent_hash: 8bb499e10691809eea3f1a2ff89397a3e935af6a4835bef31f54626c85d22246
+                  evidence:
+                    tests:
+                        - tests/paused.test.ts::Efficient Continuation Dispatcher > UT-7 starts every Continuation Adapter before collecting stable outcomes
+                    recorded_at: "2026-09-01T10:52:28Z"
+            - id: IT-4
+              kind: integration_test
+              title: Continuation Timer Starts Multiple Agent Sessions
+              body: Use fake Continuation Timer expiry and deferred Subagent session prompts. Verify all Subagent Continuation Adapters and later main Paused Agent Continuation Adapter start before any deferred Subagent settles, then verify independent outcome collection.
+              approved_content_hash: 4f420f0260942fb83eeee414f7a8df4a6248e8152a3d9cd98c6eb60b34c3394d
+              approved_parent_hash: cce0d1de663bb3c6628d502bfca6027e12f1dbfb2277d8207557a378425268eb
+              evidence:
+                tests:
+                    - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > AT-7 IT-4 starts all quota-paused sessions before any resumed session settles
+                recorded_at: "2026-09-01T10:52:28Z"
+        - id: AT-7
+          kind: acceptance_test
+          title: Non-Blocking Paused Agent Continuation
+          body: Expire a Continuation Timer with multiple Subagents and a main Paused Agent. Keep each Subagent run pending and assert every Subagent Continuation Adapter starts in stable order, main Continuation Adapter starts afterward, and rejection of one pending run does not block other Continuation Signals.
+          covers:
+            - US-4.AC-1
+            - US-4.AC-2
+            - US-4.AC-3
+          approved_content_hash: 4ef56127bd73753687c3c204c69a770d81f94d0ae54b48eddbadbfa69777beac
+          approved_parent_hash: dd981dc8848238f8f2251406f45fc977f794736a5584db66a4fac6f7e5a2e052
+          evidence:
+            tests:
+                - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > AT-7 IT-4 starts all quota-paused sessions before any resumed session settles
+            recorded_at: "2026-09-01T10:52:28Z"

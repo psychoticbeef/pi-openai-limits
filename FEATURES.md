@@ -7,6 +7,7 @@
 - **US-1** — Display OpenAI Usage in the Status Bar
 - **US-2** — Detect and Visibly Wait for a Quota Reset
 - **US-3** — Resume Paused Agents in Order
+- **US-4** — Start Paused Agents Without Serial Waiting
 
 ## Glossary
 
