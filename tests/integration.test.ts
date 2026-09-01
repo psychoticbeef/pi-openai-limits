@@ -22,6 +22,12 @@ const exhaustedPayload = {
     secondary_window: { used_percent: 55, reset_at: (START + 604_800_000) / 1000, limit_window_seconds: 604_800 },
   },
 };
+const currentPayload = {
+  rate_limit: {
+    primary_window: { used_percent: 4, reset_at: (START + 604_800_000) / 1000, limit_window_seconds: 604_800 },
+    secondary_window: null,
+  },
+};
 
 type Handler = (event: Record<string, unknown>, ctx: FakeContext) => unknown;
 
@@ -132,6 +138,21 @@ describe("Pi Lifecycle, Authentication, and Status Integration", () => {
     expect(ctx.statuses.get("openai-usage")).toBe(
       "5h 20% resets 13:00 | week 55% resets Wed 12:00",
     );
+  });
+
+  it("AT-8 IT-5 renders available OpenAI Usage when another Reset Window is absent", async () => {
+    const transport = vi.fn(async () => currentPayload);
+    const ctx = createContext();
+    const harness = createHarness(createPiOpenAiLimits({
+      transport,
+      now: () => START,
+      timeZone: "UTC",
+      locale: "en-GB",
+    }));
+
+    await expect(harness.emit("session_start", ctx)).resolves.toBeUndefined();
+
+    expect(ctx.statuses.get("openai-usage")).toBe("week 4% resets Wed 12:00");
   });
 
   it.each([

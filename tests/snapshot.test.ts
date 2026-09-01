@@ -67,4 +67,19 @@ describe("Usage Snapshot State and Status Formatting", () => {
     expect(formatCompactAge(59_000)).toBe("59s ago");
     expect(formatCompactAge(2 * 60 * 60 * 1000)).toBe("2h ago");
   });
+
+  it("UT-8 formats available Reset Window from duration", async () => {
+    const store = new UsageSnapshotStore(async () => ({
+      rate_limit: {
+        primary_window: usagePayload.rate_limit.secondary_window,
+        secondary_window: null,
+      },
+    }), () => START);
+
+    expect(await store.refresh("token")).toBe(true);
+    expect(formatUsageStatus(store.snapshot!, START, {
+      locale: "en-GB",
+      timeZone: "UTC",
+    })).toBe("week 60% resets Tue 12:00");
+  });
 });

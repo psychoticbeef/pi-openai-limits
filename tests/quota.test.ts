@@ -9,11 +9,13 @@ import type { OpenAIUsage } from "../src/usage.js";
 
 const NOW = Date.UTC(2025, 0, 1, 12, 0, 0);
 
-function usage(fiveHourUsed: number, weeklyUsed: number): OpenAIUsage {
-  return {
-    fiveHour: { usedPercent: fiveHourUsed, resetAt: NOW / 1000 + 3600, windowSeconds: 18_000 },
-    weekly: { usedPercent: weeklyUsed, resetAt: NOW / 1000 + 86_400, windowSeconds: 604_800 },
-  };
+function usage(fiveHourUsed: number, weeklyUsed: number): OpenAIUsage & {
+  fiveHour: NonNullable<OpenAIUsage["fiveHour"]>;
+  weekly: NonNullable<OpenAIUsage["weekly"]>;
+} {
+  const fiveHour = { usedPercent: fiveHourUsed, resetAt: NOW / 1000 + 3600, windowSeconds: 18_000 };
+  const weekly = { usedPercent: weeklyUsed, resetAt: NOW / 1000 + 86_400, windowSeconds: 604_800 };
+  return { windows: [fiveHour, weekly], fiveHour, weekly };
 }
 
 describe("Quota Failure Classifier and Reset Planner", () => {
