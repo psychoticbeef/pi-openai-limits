@@ -1,6 +1,6 @@
 # pi-openai-limits
 
-> Global Pi TUI extension for OpenAI OAuth users that shows 5-hour and weekly usage/reset times and resumes quota-paused agents; inactive without Pi OAuth or on other providers.
+> Global Pi TUI extension for OpenAI OAuth users that shows available usage Reset Windows and reset times and resumes quota-paused agents; inactive without Pi OAuth or on other providers.
 
 ## Features
 
@@ -8,6 +8,7 @@
 - **US-2** — Detect and Visibly Wait for a Quota Reset
 - **US-3** — Resume Paused Agents in Order
 - **US-4** — Start Paused Agents Without Serial Waiting
+- **US-5** — Restore Missing OpenAI Usage Status
 
 ## Glossary
 
@@ -15,7 +16,7 @@
 - **Continuation Adapter** — Session-bound function dispatching a Continuation Signal.
 - **Continuation Signal** — Minimal prompt that resumes a Paused Agent.
 - **Continuation Timer** — Process-local timer firing five minutes after a quota reset.
-- **OpenAI Usage** — Five-hour and weekly quota consumption with reset times.
+- **OpenAI Usage** — Quota consumption with reset times across available Reset Windows.
 - **Paused Agent** — Main agent or Subagent awaiting quota-based continuation.
 - **Pi OAuth Access** — OpenAI OAuth access resolved and owned by Pi.
 - **Refresh Cooldown** — Five-minute minimum between OpenAI Usage refreshes.

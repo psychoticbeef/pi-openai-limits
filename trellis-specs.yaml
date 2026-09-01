@@ -1,7 +1,7 @@
 trellis_export: 1
 project:
     name: pi-openai-limits
-    description: Global Pi TUI extension for OpenAI OAuth users that shows 5-hour and weekly usage/reset times and resumes quota-paused agents; inactive without Pi OAuth or on other providers.
+    description: Global Pi TUI extension for OpenAI OAuth users that shows available usage Reset Windows and reset times and resumes quota-paused agents; inactive without Pi OAuth or on other providers.
     base_branch: develop
     release_branch: main
     lint_cmd: npx tsc --noEmit
@@ -17,7 +17,7 @@ glossary:
     - term: Continuation Timer
       definition: Process-local timer firing five minutes after a quota reset.
     - term: OpenAI Usage
-      definition: Five-hour and weekly quota consumption with reset times.
+      definition: Quota consumption with reset times across available Reset Windows.
     - term: Paused Agent
       definition: Main agent or Subagent awaiting quota-based continuation.
     - term: Pi OAuth Access
@@ -29,17 +29,18 @@ glossary:
     - term: Usage Snapshot
       definition: The last successfully fetched OpenAI Usage.
 counters:
-    AS: 4
-    AT: 7
+    AS: 5
+    AT: 8
     CC: 3
-    DD: 7
-    IT: 4
-    US: 4
-    UT: 7
+    DD: 8
+    IT: 5
+    US: 5
+    UT: 8
     ac:US-1: 4
     ac:US-2: 4
     ac:US-3: 4
     ac:US-4: 3
+    ac:US-5: 2
 cross_cutting:
     - id: CC-1
       kind: cross_cutting
@@ -60,7 +61,7 @@ stories:
     - id: US-1
       kind: story
       title: Display OpenAI Usage in the Status Bar
-      body: Display five-hour and weekly OpenAI Usage, including reset times and freshness, in supported TUI sessions.
+      body: Display available OpenAI Usage Reset Windows, including duration-derived labels, reset times, and freshness, in supported TUI sessions.
       status: done
       paths:
         - src/index.ts
@@ -74,7 +75,7 @@ stories:
         - id: US-1.AC-1
           given: a TUI session with an OpenAI model and existing Pi OAuth Access
           when: the session starts
-          then: OpenAI Usage is fetched immediately and both limits and reset times are shown in the status bar
+          then: OpenAI Usage is fetched immediately and every available limit and reset time is shown; an absent Reset Window does not suppress status
         - id: US-1.AC-2
           given: Pi OAuth Access is unavailable or a non-OpenAI model is selected
           when: the extension starts or the model changes
@@ -92,20 +93,20 @@ stories:
           pinned_hash: 339daacb5e5fc6fd62d71810b4525097aebbc64d040720fcaca7619747b12d02
         - target: CC-2
           pinned_hash: 379fffefdcc08b948bed96b16e1aa7caf4173b1be1196d9a7a3e6aa5b55bd276
-      approved_content_hash: d18964b82bf6d33a19ee1772d5ece2f90bd946cd297e2d18c9ab0f836a2b2dfe
+      approved_content_hash: ad36f90bda6bc10118dc3cdd6139890789fa9a4b118a8f06985cff9bec36c813
       children:
         - id: AS-1
           kind: arch
           title: OpenAI Usage Status Architecture
           body: Coordinate Pi lifecycle events, eligibility, OpenAI Usage retrieval, Usage Snapshot state, refresh policy, and a compact TUI status renderer without owning or persisting Pi OAuth Access.
           approved_content_hash: 0e58ce4bfab6644d834f31fff28a94f3f35ab839c459db1032972f2356ec97d6
-          approved_parent_hash: d18964b82bf6d33a19ee1772d5ece2f90bd946cd297e2d18c9ab0f836a2b2dfe
+          approved_parent_hash: ad36f90bda6bc10118dc3cdd6139890789fa9a4b118a8f06985cff9bec36c813
           children:
             - id: DD-1
               kind: detail_design
               title: Eligibility and OpenAI Usage Client
-              body: Derive activation from TUI mode, selected OpenAI provider, and resolvable Pi OAuth Access. Pass the resolved Pi OAuth Access directly to an injected transport, validate the five-hour and weekly payload, and return normalized OpenAI Usage without logging or retaining credentials.
-              approved_content_hash: 99610c3c8bb3a5cbc8cdf21c9e618a496083df99cead4997ceb50034a5b4e998
+              body: Derive activation from TUI mode, selected OpenAI provider, and resolvable Pi OAuth Access. Pass the resolved Pi OAuth Access directly to an injected transport, validate every available Reset Window, require at least one valid window, sort windows by duration, and expose five-hour and weekly aliases only for matching durations without logging or retaining credentials.
+              approved_content_hash: e8f9f807f5cb329cdaaaf973732654b93c7fbb601606a97e54ab34cefeb5e7c9
               approved_parent_hash: 0e58ce4bfab6644d834f31fff28a94f3f35ab839c459db1032972f2356ec97d6
               children:
                 - id: UT-1
@@ -113,7 +114,7 @@ stories:
                   title: Eligibility and OpenAI Usage Normalization
                   body: Cover eligible and ineligible contexts, absent Pi OAuth Access, malformed responses, normalized limit values, and reset timestamps while asserting that credential material is never included in returned state or diagnostics.
                   approved_content_hash: c3cf0abfa52c689eff930f4b874040423e310a5b33ec05bd70eaea90e71c2230
-                  approved_parent_hash: 99610c3c8bb3a5cbc8cdf21c9e618a496083df99cead4997ceb50034a5b4e998
+                  approved_parent_hash: e8f9f807f5cb329cdaaaf973732654b93c7fbb601606a97e54ab34cefeb5e7c9
                   evidence:
                     tests:
                         - tests/usage.test.ts::Eligibility and OpenAI Usage Client > UT-1 normalizes five-hour and weekly OpenAI Usage without credential material
@@ -157,12 +158,12 @@ stories:
         - id: AT-1
           kind: acceptance_test
           title: Eligible and Ineligible Session Status
-          body: Run the extension in TUI sessions with eligible and ineligible model/authentication combinations. Assert that eligible startup fetches OpenAI Usage and renders both windows and reset times, while missing Pi OAuth Access, non-OpenAI providers, and non-TUI modes make no request and render no extension status.
+          body: Run the extension in TUI sessions with eligible and ineligible model/authentication combinations. Assert that eligible startup fetches OpenAI Usage and renders every available Reset Window with a duration-derived label and reset time, including payloads containing only one window, while missing Pi OAuth Access, non-OpenAI providers, and non-TUI modes make no request and render no extension status.
           covers:
             - US-1.AC-1
             - US-1.AC-2
-          approved_content_hash: 1758cf43769577c10d67c84b3db594f3827405d75be268d4771cf52969b62bf0
-          approved_parent_hash: d18964b82bf6d33a19ee1772d5ece2f90bd946cd297e2d18c9ab0f836a2b2dfe
+          approved_content_hash: cb4d34c6377a1ed561718629efb1f53b8b7fc46a90f90ff693d3e28db2fd7ff8
+          approved_parent_hash: ad36f90bda6bc10118dc3cdd6139890789fa9a4b118a8f06985cff9bec36c813
           evidence:
             tests:
                 - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > AT-1 fetches and renders both OpenAI Usage windows for eligible TUI startup
@@ -178,7 +179,7 @@ stories:
             - US-1.AC-3
             - US-1.AC-4
           approved_content_hash: 4aa4b5317260f39217a57ef83eb7048751d08a8bb46b80ffbbcbcf6c7bbc032d
-          approved_parent_hash: d18964b82bf6d33a19ee1772d5ece2f90bd946cd297e2d18c9ab0f836a2b2dfe
+          approved_parent_hash: ad36f90bda6bc10118dc3cdd6139890789fa9a4b118a8f06985cff9bec36c813
           evidence:
             tests:
                 - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > AT-2 keeps cached Usage Snapshot stale during Refresh Cooldown then refreshes after Agent Handoff
@@ -500,3 +501,82 @@ stories:
             tests:
                 - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > AT-7 IT-4 starts all quota-paused sessions before any resumed session settles
             recorded_at: "2026-09-01T10:52:28Z"
+    - id: US-5
+      kind: story
+      title: Restore Missing OpenAI Usage Status
+      body: Restore visible OpenAI Usage in eligible TUI sessions after Pi compatibility changes.
+      status: done
+      paths:
+        - src/usage.ts
+        - src/snapshot.ts
+        - src/quota.ts
+        - tests/usage.test.ts
+        - tests/snapshot.test.ts
+        - tests/quota.test.ts
+        - tests/integration.test.ts
+      acceptance_criteria:
+        - id: US-5.AC-1
+          given: a TUI session with an OpenAI model and existing Pi OAuth Access
+          when: session startup receives OpenAI Usage containing available Reset Windows
+          then: each available limit and reset time is visible in the status bar
+        - id: US-5.AC-2
+          given: OpenAI Usage with one valid Reset Window and another absent Reset Window
+          when: the response is normalized into a Usage Snapshot
+          then: the valid Reset Window remains visible instead of discarding the complete Usage Snapshot
+      depends_on:
+        - target: CC-1
+          pinned_hash: 339daacb5e5fc6fd62d71810b4525097aebbc64d040720fcaca7619747b12d02
+        - target: CC-2
+          pinned_hash: 379fffefdcc08b948bed96b16e1aa7caf4173b1be1196d9a7a3e6aa5b55bd276
+      approved_content_hash: eaf5ec394bcd4ef131e8d95a29ea34b8693f9ef6a773c49d88a646583df973e0
+      children:
+        - id: AS-5
+          kind: arch
+          title: Variable Reset Window Compatibility
+          body: Coordinate Pi lifecycle activation, Pi OAuth Access resolution, OpenAI Usage retrieval, duration-based Reset Window normalization, Usage Snapshot state, and compact status rendering while tolerating absent Reset Windows.
+          approved_content_hash: d61568b71ed59f3112fa57069ca3b8f4f23cc19e9e963e94ffc971ab98ca3532
+          approved_parent_hash: eaf5ec394bcd4ef131e8d95a29ea34b8693f9ef6a773c49d88a646583df973e0
+          children:
+            - id: DD-8
+              kind: detail_design
+              title: Available Reset Window Normalization
+              body: Normalize each valid Reset Window independently, identify display labels from window duration, preserve available OpenAI Usage when another Reset Window is absent, and reject responses containing no usable Reset Window.
+              approved_content_hash: e77acebfeb4fd614b86557bf69160991c4243f526173931020d8309fe0cc62a4
+              approved_parent_hash: d61568b71ed59f3112fa57069ca3b8f4f23cc19e9e963e94ffc971ab98ca3532
+              children:
+                - id: UT-8
+                  kind: unit_test
+                  title: Partial and Reordered Reset Windows
+                  body: Cover OpenAI Usage payloads with one Reset Window, two Reset Windows, an absent Reset Window, reordered Reset Windows, or malformed values while asserting duration-derived status labels and preserved valid Reset Windows.
+                  approved_content_hash: 10196b1cb675bb2bfbd15ad80aafb1274d6443a820d647dffa0f8b5acb1564e4
+                  approved_parent_hash: e77acebfeb4fd614b86557bf69160991c4243f526173931020d8309fe0cc62a4
+                  evidence:
+                    tests:
+                        - tests/snapshot.test.ts::Usage Snapshot State and Status Formatting > UT-8 formats available Reset Window from duration
+                        - tests/usage.test.ts::Eligibility and OpenAI Usage Client > UT-8 preserves one valid Reset Window when another is absent
+                        - tests/usage.test.ts::Eligibility and OpenAI Usage Client > UT-8 preserves one valid Reset Window when another is malformed
+                        - tests/usage.test.ts::Eligibility and OpenAI Usage Client > UT-8 identifies reordered Reset Windows by duration
+                    recorded_at: "2026-09-01T13:50:12Z"
+            - id: IT-5
+              kind: integration_test
+              title: Startup with Current OpenAI Usage Shape
+              body: Use Pi extension harness with fake Pi OAuth Access, current OpenAI Usage response containing one Reset Window, lifecycle events, and status sink. Verify eligible TUI startup creates a visible Usage Snapshot without disrupting agent execution.
+              approved_content_hash: 1840df7f504bb285f8842ab2b13f2efef979075d99fd35bdd07be5f0754c9a62
+              approved_parent_hash: d61568b71ed59f3112fa57069ca3b8f4f23cc19e9e963e94ffc971ab98ca3532
+              evidence:
+                tests:
+                    - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > AT-8 IT-5 renders available OpenAI Usage when another Reset Window is absent
+                recorded_at: "2026-09-01T13:50:12Z"
+        - id: AT-8
+          kind: acceptance_test
+          title: Visible Available OpenAI Usage
+          body: Run eligible TUI startup with OpenAI Usage containing one valid Reset Window and one absent Reset Window. Assert available limit and reset time remain visible in status bar.
+          covers:
+            - US-5.AC-1
+            - US-5.AC-2
+          approved_content_hash: a11164244fc8f2306354a3eb446f473ca8adb7cc49e7a6b1318db93379b2609a
+          approved_parent_hash: eaf5ec394bcd4ef131e8d95a29ea34b8693f9ef6a773c49d88a646583df973e0
+          evidence:
+            tests:
+                - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > AT-8 IT-5 renders available OpenAI Usage when another Reset Window is absent
+            recorded_at: "2026-09-01T13:50:12Z"
