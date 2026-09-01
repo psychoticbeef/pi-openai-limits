@@ -8,8 +8,9 @@ export interface UsageWindow {
 }
 
 export interface OpenAIUsage {
-  fiveHour: UsageWindow;
-  weekly: UsageWindow;
+  windows: [UsageWindow, ...UsageWindow[]];
+  fiveHour?: UsageWindow;
+  weekly?: UsageWindow;
 }
 
 export type UsageTransport = (access: string, signal?: AbortSignal) => Promise<unknown>;
@@ -51,9 +52,32 @@ export function normalizeOpenAIUsage(payload: unknown): OpenAIUsage {
   }
 
   const limits = rateLimit as Record<string, unknown>;
+  const windows: UsageWindow[] = [];
+  const errors: Error[] = [];
+  for (const [window, field] of [
+    [limits.primary_window, "rate_limit.primary_window"],
+    [limits.secondary_window, "rate_limit.secondary_window"],
+  ] as const) {
+    if (window === null || window === undefined) continue;
+    try {
+      windows.push(normalizeWindow(window, field));
+    } catch (error) {
+      errors.push(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+  windows.sort((left, right) => left.windowSeconds - right.windowSeconds);
+
+  if (windows.length === 0) {
+    throw errors[0] ?? new Error("Invalid OpenAI Usage field: rate_limit windows");
+  }
+
+  const availableWindows = windows as [UsageWindow, ...UsageWindow[]];
+  const fiveHour = availableWindows.find((window) => window.windowSeconds === 18_000);
+  const weekly = availableWindows.find((window) => window.windowSeconds === 604_800);
   return {
-    fiveHour: normalizeWindow(limits.primary_window, "rate_limit.primary_window"),
-    weekly: normalizeWindow(limits.secondary_window, "rate_limit.secondary_window"),
+    windows: availableWindows,
+    ...(fiveHour ? { fiveHour } : {}),
+    ...(weekly ? { weekly } : {}),
   };
 }
 

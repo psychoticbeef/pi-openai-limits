@@ -32,10 +32,9 @@ describe("Eligibility and OpenAI Usage Client", () => {
   it("UT-1 normalizes five-hour and weekly OpenAI Usage without credential material", () => {
     const usage = normalizeOpenAIUsage(payload);
 
-    expect(usage).toEqual({
-      fiveHour: { usedPercent: 25.4, resetAt: 1_735_737_400, windowSeconds: 18_000 },
-      weekly: { usedPercent: 61, resetAt: 1_736_251_200, windowSeconds: 604_800 },
-    });
+    const fiveHour = { usedPercent: 25.4, resetAt: 1_735_737_400, windowSeconds: 18_000 };
+    const weekly = { usedPercent: 61, resetAt: 1_736_251_200, windowSeconds: 604_800 };
+    expect(usage).toEqual({ windows: [fiveHour, weekly], fiveHour, weekly });
     expect(JSON.stringify(usage)).not.toContain("access");
     expect(JSON.stringify(usage)).not.toContain("acct-123");
   });
@@ -46,8 +45,38 @@ describe("Eligibility and OpenAI Usage Client", () => {
     );
     expect(() => normalizeOpenAIUsage({ rate_limit: {
       primary_window: { ...payload.rate_limit.primary_window, used_percent: 101 },
-      secondary_window: payload.rate_limit.secondary_window,
+      secondary_window: null,
     } })).toThrow("Invalid OpenAI Usage values");
+    expect(() => normalizeOpenAIUsage({ rate_limit: {
+      primary_window: null,
+      secondary_window: null,
+    } })).toThrow("rate_limit windows");
+  });
+
+  it.each([
+    ["absent", null],
+    ["malformed", { used_percent: 101 }],
+  ])("UT-8 preserves one valid Reset Window when another is %s", (_case, secondaryWindow) => {
+    const usage = normalizeOpenAIUsage({ rate_limit: {
+      primary_window: payload.rate_limit.secondary_window,
+      secondary_window: secondaryWindow,
+    } });
+
+    expect(usage).toEqual({
+      windows: [{ usedPercent: 61, resetAt: 1_736_251_200, windowSeconds: 604_800 }],
+      weekly: { usedPercent: 61, resetAt: 1_736_251_200, windowSeconds: 604_800 },
+    });
+  });
+
+  it("UT-8 identifies reordered Reset Windows by duration", () => {
+    const usage = normalizeOpenAIUsage({ rate_limit: {
+      primary_window: payload.rate_limit.secondary_window,
+      secondary_window: payload.rate_limit.primary_window,
+    } });
+
+    expect(usage.windows?.map((window) => window.windowSeconds)).toEqual([18_000, 604_800]);
+    expect(usage.fiveHour?.usedPercent).toBe(25.4);
+    expect(usage.weekly?.usedPercent).toBe(61);
   });
 
   it("UT-1 sends Pi OAuth Access directly to transport with transient account header", async () => {
