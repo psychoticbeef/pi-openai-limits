@@ -1,0 +1,426 @@
+trellis_export: 1
+project:
+    name: pi-openai-limits
+    description: Global Pi TUI extension for OpenAI OAuth users that shows 5-hour and weekly usage/reset times and resumes quota-paused agents; inactive without Pi OAuth or on other providers.
+    base_branch: develop
+    release_branch: main
+    lint_cmd: npx tsc --noEmit
+    test_cmd: npx vitest run --reporter=junit --outputFile=reports/tests.xml --coverage.enabled --coverage.reporter=lcov --coverage.reportsDirectory=reports/coverage
+    junit_glob: reports/*.xml
+glossary:
+    - term: Agent Handoff
+      definition: Agent returns control to human.
+    - term: Continuation Adapter
+      definition: Session-bound function dispatching a Continuation Signal.
+    - term: Continuation Signal
+      definition: Minimal prompt that resumes a Paused Agent.
+    - term: Continuation Timer
+      definition: Process-local timer firing five minutes after a quota reset.
+    - term: OpenAI Usage
+      definition: Five-hour and weekly quota consumption with reset times.
+    - term: Paused Agent
+      definition: Main agent or Subagent awaiting quota-based continuation.
+    - term: Pi OAuth Access
+      definition: OpenAI OAuth access resolved and owned by Pi.
+    - term: Refresh Cooldown
+      definition: Five-minute minimum between OpenAI Usage refreshes.
+    - term: Reset Window
+      definition: OpenAI Usage window identified by duration and reset time.
+    - term: Usage Snapshot
+      definition: The last successfully fetched OpenAI Usage.
+counters:
+    AS: 3
+    AT: 6
+    CC: 3
+    DD: 6
+    IT: 3
+    US: 3
+    UT: 6
+    ac:US-1: 4
+    ac:US-2: 4
+    ac:US-3: 4
+cross_cutting:
+    - id: CC-1
+      kind: cross_cutting
+      title: OAuth Credential Safety and Provider Scope
+      body: Use only OAuth access already resolved by Pi. Never persist, log, or expose credentials. Remain inactive without OAuth access, outside TUI mode, or when the selected provider is not OpenAI.
+      approved_content_hash: 339daacb5e5fc6fd62d71810b4525097aebbc64d040720fcaca7619747b12d02
+    - id: CC-2
+      kind: cross_cutting
+      title: Non-Disruptive Usage Freshness
+      body: Usage-fetch failures must never interrupt an agent. Keep the last known usage visible and indicate staleness with a compact last-update age such as `5m ago`, rather than a verbose warning.
+      approved_content_hash: 379fffefdcc08b948bed96b16e1aa7caf4173b1be1196d9a7a3e6aa5b55bd276
+    - id: CC-3
+      kind: cross_cutting
+      title: Process-Local Ephemeral Scheduling
+      body: Each Pi process owns its timers independently. Timers and paused-agent state remain in memory only, are not coordinated across sessions, and do not survive process termination.
+      approved_content_hash: f76e07e585410a8a81dee45450204df72f5c10b0c3befef7fdba13709894b544
+stories:
+    - id: US-1
+      kind: story
+      title: Display OpenAI Usage in the Status Bar
+      body: Display five-hour and weekly OpenAI Usage, including reset times and freshness, in supported TUI sessions.
+      status: done
+      paths:
+        - src/index.ts
+        - src/snapshot.ts
+        - src/usage.ts
+        - tests/integration.test.ts
+        - tests/smoke.test.ts
+        - tests/snapshot.test.ts
+        - tests/usage.test.ts
+      acceptance_criteria:
+        - id: US-1.AC-1
+          given: a TUI session with an OpenAI model and existing Pi OAuth Access
+          when: the session starts
+          then: OpenAI Usage is fetched immediately and both limits and reset times are shown in the status bar
+        - id: US-1.AC-2
+          given: Pi OAuth Access is unavailable or a non-OpenAI model is selected
+          when: the extension starts or the model changes
+          then: it performs no OpenAI Usage request and displays no extension status
+        - id: US-1.AC-3
+          given: a prompt has been submitted or the agent is actively producing a response
+          when: the Usage Snapshot can no longer be considered current
+          then: the status bar clearly marks the displayed Usage Snapshot as stale until the next successful refresh
+        - id: US-1.AC-4
+          given: a stale Usage Snapshot and an upcoming Agent Handoff
+          when: Agent Handoff occurs after the Refresh Cooldown
+          then: OpenAI Usage is refreshed; during the Refresh Cooldown the cached Usage Snapshot remains visible and stale without another request
+      depends_on:
+        - target: CC-1
+          pinned_hash: 339daacb5e5fc6fd62d71810b4525097aebbc64d040720fcaca7619747b12d02
+        - target: CC-2
+          pinned_hash: 379fffefdcc08b948bed96b16e1aa7caf4173b1be1196d9a7a3e6aa5b55bd276
+      approved_content_hash: d18964b82bf6d33a19ee1772d5ece2f90bd946cd297e2d18c9ab0f836a2b2dfe
+      children:
+        - id: AS-1
+          kind: arch
+          title: OpenAI Usage Status Architecture
+          body: Coordinate Pi lifecycle events, eligibility, OpenAI Usage retrieval, Usage Snapshot state, refresh policy, and a compact TUI status renderer without owning or persisting Pi OAuth Access.
+          approved_content_hash: 0e58ce4bfab6644d834f31fff28a94f3f35ab839c459db1032972f2356ec97d6
+          approved_parent_hash: d18964b82bf6d33a19ee1772d5ece2f90bd946cd297e2d18c9ab0f836a2b2dfe
+          children:
+            - id: DD-1
+              kind: detail_design
+              title: Eligibility and OpenAI Usage Client
+              body: Derive activation from TUI mode, selected OpenAI provider, and resolvable Pi OAuth Access. Pass the resolved Pi OAuth Access directly to an injected transport, validate the five-hour and weekly payload, and return normalized OpenAI Usage without logging or retaining credentials.
+              approved_content_hash: 99610c3c8bb3a5cbc8cdf21c9e618a496083df99cead4997ceb50034a5b4e998
+              approved_parent_hash: 0e58ce4bfab6644d834f31fff28a94f3f35ab839c459db1032972f2356ec97d6
+              children:
+                - id: UT-1
+                  kind: unit_test
+                  title: Eligibility and OpenAI Usage Normalization
+                  body: Cover eligible and ineligible contexts, absent Pi OAuth Access, malformed responses, normalized limit values, and reset timestamps while asserting that credential material is never included in returned state or diagnostics.
+                  approved_content_hash: c3cf0abfa52c689eff930f4b874040423e310a5b33ec05bd70eaea90e71c2230
+                  approved_parent_hash: 99610c3c8bb3a5cbc8cdf21c9e618a496083df99cead4997ceb50034a5b4e998
+                  evidence:
+                    tests:
+                        - tests/usage.test.ts::Eligibility and OpenAI Usage Client > UT-1 normalizes five-hour and weekly OpenAI Usage without credential material
+                        - tests/usage.test.ts::Eligibility and OpenAI Usage Client > UT-1 rejects malformed OpenAI Usage responses
+                        - tests/usage.test.ts::Eligibility and OpenAI Usage Client > UT-1 sends Pi OAuth Access directly to transport with transient account header
+                        - tests/usage.test.ts::Eligibility and OpenAI Usage Client > UT-1 reports bounded diagnostics without exposing Pi OAuth Access
+                    recorded_at: "2026-08-31T17:18:51Z"
+            - id: DD-2
+              kind: detail_design
+              title: Usage Snapshot State and Status Formatting
+              body: Store normalized OpenAI Usage, successful-fetch time, and stale state in memory. Mark the Usage Snapshot stale after prompt submission, refresh on eligible Agent Handoff after the Refresh Cooldown, and format limits, reset times, and compact age for the status bar.
+              approved_content_hash: 5573e67542189c0b6702a48e47847696dfd070ee5e6f21da7d7b058a3275b97b
+              approved_parent_hash: 0e58ce4bfab6644d834f31fff28a94f3f35ab839c459db1032972f2356ec97d6
+              children:
+                - id: UT-2
+                  kind: unit_test
+                  title: Freshness, Cooldown, and Status Formatting
+                  body: Use a fake clock to cover stale transitions, Refresh Cooldown boundaries, successful refreshes, retained failed-refresh state, reset-time formatting, and compact age output such as `5m ago`.
+                  approved_content_hash: e18b46f83f864bfb9226d0ba8811a8d71f540b73cdd62e2cc100ddd31451dc6b
+                  approved_parent_hash: 5573e67542189c0b6702a48e47847696dfd070ee5e6f21da7d7b058a3275b97b
+                  evidence:
+                    tests:
+                        - tests/snapshot.test.ts::Usage Snapshot State and Status Formatting > UT-2 enforces Refresh Cooldown boundaries and refreshes at five minutes
+                        - tests/snapshot.test.ts::Usage Snapshot State and Status Formatting > UT-2 retains failed-refresh Usage Snapshot and marks it stale
+                        - tests/snapshot.test.ts::Usage Snapshot State and Status Formatting > UT-2 formats both reset times and compact stale age
+                    recorded_at: "2026-08-31T17:18:51Z"
+            - id: IT-1
+              kind: integration_test
+              title: Pi Lifecycle, Authentication, and Status Integration
+              body: Use a Pi extension harness with fake model registry authentication, OpenAI Usage transport, lifecycle events, and UI status sink. Verify session startup, model changes, prompt submission, Agent Handoff, Refresh Cooldown enforcement, and visible Usage Snapshot updates end to end.
+              approved_content_hash: 623057c12951865fdb25c454e3ba4c5b5ac99a108a86b5c750870ed1631b62d1
+              approved_parent_hash: 0e58ce4bfab6644d834f31fff28a94f3f35ab839c459db1032972f2356ec97d6
+              evidence:
+                tests:
+                    - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > IT-1 discards delayed Pi OAuth Access resolution after provider deactivation
+                    - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > IT-1 discards an in-flight refresh after provider deactivation
+                    - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > IT-1 retains stale Usage Snapshot when Pi OAuth Access refresh throws
+                    - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > IT-1 handles model changes, failed refreshes, and shutdown without disrupting agent
+                    - tests/smoke.test.ts::pi-openai-limits extension > IT-1 exports an extension factory
+                recorded_at: "2026-08-31T17:18:51Z"
+        - id: AT-1
+          kind: acceptance_test
+          title: Eligible and Ineligible Session Status
+          body: Run the extension in TUI sessions with eligible and ineligible model/authentication combinations. Assert that eligible startup fetches OpenAI Usage and renders both windows and reset times, while missing Pi OAuth Access, non-OpenAI providers, and non-TUI modes make no request and render no extension status.
+          covers:
+            - US-1.AC-1
+            - US-1.AC-2
+          approved_content_hash: 1758cf43769577c10d67c84b3db594f3827405d75be268d4771cf52969b62bf0
+          approved_parent_hash: d18964b82bf6d33a19ee1772d5ece2f90bd946cd297e2d18c9ab0f836a2b2dfe
+          evidence:
+            tests:
+                - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > AT-1 fetches and renders both OpenAI Usage windows for eligible TUI startup
+                - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > AT-1 stays inactive for missing Pi OAuth Access
+                - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > AT-1 stays inactive for non-OpenAI provider
+                - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > AT-1 stays inactive for non-TUI mode
+            recorded_at: "2026-08-31T17:18:51Z"
+        - id: AT-2
+          kind: acceptance_test
+          title: Usage Snapshot Freshness and Handoff Refresh
+          body: Submit a prompt, observe active generation, and reach Agent Handoff both inside and outside the Refresh Cooldown. Assert that the Usage Snapshot shows a compact last-update age while stale, remains cached during the Refresh Cooldown, and refreshes after an eligible Agent Handoff.
+          covers:
+            - US-1.AC-3
+            - US-1.AC-4
+          approved_content_hash: 4aa4b5317260f39217a57ef83eb7048751d08a8bb46b80ffbbcbcf6c7bbc032d
+          approved_parent_hash: d18964b82bf6d33a19ee1772d5ece2f90bd946cd297e2d18c9ab0f836a2b2dfe
+          evidence:
+            tests:
+                - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > AT-2 keeps cached Usage Snapshot stale during Refresh Cooldown then refreshes after Agent Handoff
+            recorded_at: "2026-08-31T17:18:51Z"
+    - id: US-2
+      kind: story
+      title: Detect and Visibly Wait for a Quota Reset
+      body: Detect exhausted OpenAI Usage, bypass the Refresh Cooldown, and schedule a Continuation Timer for five minutes after the reset.
+      status: done
+      paths:
+        - src/index.ts
+        - src/quota.ts
+        - src/timer.ts
+        - tests/integration.test.ts
+        - tests/quota.test.ts
+        - tests/timer.test.ts
+      acceptance_criteria:
+        - id: US-2.AC-1
+          given: an active OpenAI TUI session
+          when: a provider response fails because OpenAI Usage is exhausted
+          then: OpenAI Usage is refreshed immediately regardless of the Refresh Cooldown
+        - id: US-2.AC-2
+          given: the exhausted OpenAI Usage reset time is known
+          when: the quota failure is processed
+          then: exactly one Continuation Timer is scheduled for five minutes after the reset
+        - id: US-2.AC-3
+          given: a Continuation Timer is scheduled
+          when: the status bar is rendered or updated
+          then: it shows a live countdown to continuation alongside the Usage Snapshot
+        - id: US-2.AC-4
+          given: a Continuation Timer already exists for the same Reset Window
+          when: another quota failure occurs
+          then: no duplicate Continuation Timer is scheduled
+      depends_on:
+        - target: CC-1
+          pinned_hash: 339daacb5e5fc6fd62d71810b4525097aebbc64d040720fcaca7619747b12d02
+        - target: CC-2
+          pinned_hash: 379fffefdcc08b948bed96b16e1aa7caf4173b1be1196d9a7a3e6aa5b55bd276
+        - target: CC-3
+          pinned_hash: f76e07e585410a8a81dee45450204df72f5c10b0c3befef7fdba13709894b544
+      approved_content_hash: 2e990f95a8f27f69d2cf392a9b96807ad66bd1b9ffb7ebcb6f0010872c3696f5
+      children:
+        - id: AS-2
+          kind: arch
+          title: Quota Reset Scheduling Architecture
+          body: Translate eligible OpenAI quota failures into immediate OpenAI Usage refresh, Reset Window selection, one process-local Continuation Timer, and a live status countdown while leaving unrelated failures untouched.
+          approved_content_hash: 6781afe70cc34ab66a2b7613302642f49dd9cf84ca72fdd0d21990c9fb6c66aa
+          approved_parent_hash: 2e990f95a8f27f69d2cf392a9b96807ad66bd1b9ffb7ebcb6f0010872c3696f5
+          children:
+            - id: DD-3
+              kind: detail_design
+              title: Quota Failure Classifier and Reset Planner
+              body: Classify only supported OpenAI quota exhaustion signals. Select the exhausted Reset Window, validate its reset time, and calculate continuation at reset plus five minutes without altering unrelated provider failures.
+              approved_content_hash: 7a3091f579d57e648e588310a98a6bd492c0b4957bcd10b2111d5a79bcda4aa9
+              approved_parent_hash: 6781afe70cc34ab66a2b7613302642f49dd9cf84ca72fdd0d21990c9fb6c66aa
+              children:
+                - id: UT-3
+                  kind: unit_test
+                  title: Quota Classification and Reset-Time Calculation
+                  body: Cover recognized and unrelated failures, five-hour and weekly OpenAI Usage exhaustion, missing or invalid reset timestamps, and exact reset-plus-five-minute calculation using a fake clock.
+                  approved_content_hash: f02f17f20665a9d1cd0c4c04e253496b7785e17f62d6b2ea80fb2e9fede8ab62
+                  approved_parent_hash: 7a3091f579d57e648e588310a98a6bd492c0b4957bcd10b2111d5a79bcda4aa9
+                  evidence:
+                    tests:
+                        - tests/quota.test.ts::Quota Failure Classifier and Reset Planner > UT-3 classifies only supported OpenAI Usage exhaustion signals
+                        - tests/quota.test.ts::Quota Failure Classifier and Reset Planner > UT-3 plans five-hour exhaustion for reset plus five minutes
+                        - tests/quota.test.ts::Quota Failure Classifier and Reset Planner > UT-3 plans weekly-only exhaustion for reset plus five minutes
+                        - tests/quota.test.ts::Quota Failure Classifier and Reset Planner > UT-3 selects later weekly reset when both OpenAI Usage windows are exhausted
+                        - tests/quota.test.ts::Quota Failure Classifier and Reset Planner > UT-3 rejects unexhausted, missing, expired, and invalid reset timestamps
+                    recorded_at: "2026-08-31T21:56:18Z"
+            - id: DD-4
+              kind: detail_design
+              title: Continuation Timer Registry and Countdown
+              body: Maintain in memory one Continuation Timer per active Reset Window, replace only obsolete scheduling state, expose remaining time for status rendering, and release resources on fire or session shutdown.
+              approved_content_hash: 78e9e31944848ea80c889dc7c6f91c327e28c1e8105e6406dcbe7c0ff7344612
+              approved_parent_hash: 6781afe70cc34ab66a2b7613302642f49dd9cf84ca72fdd0d21990c9fb6c66aa
+              children:
+                - id: UT-4
+                  kind: unit_test
+                  title: Timer Deduplication, Countdown, and Cleanup
+                  body: Use a fake scheduler to cover duplicate failures, countdown boundaries, timer firing, obsolete Reset Window replacement, explicit cleanup, and process-local isolation.
+                  approved_content_hash: cbd02258727a55f54b8dc59dded564a77489b2507013a0efef22a9595d473174
+                  approved_parent_hash: 78e9e31944848ea80c889dc7c6f91c327e28c1e8105e6406dcbe7c0ff7344612
+                  evidence:
+                    tests:
+                        - tests/timer.test.ts::Continuation Timer Registry and Countdown > UT-4 schedules one Continuation Timer and updates live countdown
+                        - tests/timer.test.ts::Continuation Timer Registry and Countdown > UT-4 deduplicates the same Reset Window and replaces obsolete scheduling state
+                        - tests/timer.test.ts::Continuation Timer Registry and Countdown > UT-4 releases resources before firing continuation and on explicit cleanup
+                        - tests/timer.test.ts::Continuation Timer Registry and Countdown > UT-4 keeps Continuation Timer state process-local
+                        - tests/timer.test.ts::Continuation Timer Registry and Countdown > UT-4 formats countdown boundaries compactly
+                    recorded_at: "2026-08-31T21:56:18Z"
+            - id: IT-2
+              kind: integration_test
+              title: Provider Failure to Continuation Timer
+              body: Use fake provider responses, OpenAI Usage transport, clock, scheduler, and status sink. Verify quota classification, Refresh Cooldown bypass, reset-time planning, Continuation Timer deduplication, countdown updates, and cleanup through the complete extension event path.
+              approved_content_hash: b482b4b61d21fc4813e648e851eb922c4ef9b6652cdfe0cb268fcbf9bc27858a
+              approved_parent_hash: 6781afe70cc34ab66a2b7613302642f49dd9cf84ca72fdd0d21990c9fb6c66aa
+              evidence:
+                tests:
+                    - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > IT-2 starts quota recovery without blocking provider response handling
+                    - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > IT-2 preserves active Continuation Timer across eligible model changes and Reset Window grace
+                    - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > IT-2 leaves unrelated provider failures untouched and cleans Continuation Timer on shutdown
+                recorded_at: "2026-08-31T21:56:18Z"
+        - id: AT-3
+          kind: acceptance_test
+          title: Quota Exhaustion Recovery
+          body: Return an exhausted-quota provider response during an eligible TUI run. Assert that OpenAI Usage refresh bypasses the Refresh Cooldown and exactly one Continuation Timer is scheduled for five minutes after the applicable reset.
+          covers:
+            - US-2.AC-1
+            - US-2.AC-2
+          approved_content_hash: 15f5b3638b61cd8ae8111de0e4a61a91b90dab3b56c80f63fcd85b36ba6904b8
+          approved_parent_hash: 2e990f95a8f27f69d2cf392a9b96807ad66bd1b9ffb7ebcb6f0010872c3696f5
+          evidence:
+            tests:
+                - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > AT-3 bypasses Refresh Cooldown and schedules reset-plus-five-minute Continuation Timer
+                - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > AT-3 schedules from known Usage Snapshot when immediate refresh fails
+            recorded_at: "2026-08-31T21:56:18Z"
+        - id: AT-4
+          kind: acceptance_test
+          title: Visible and Deduplicated Continuation Timer
+          body: Trigger repeated quota failures for the same Reset Window. Assert that one Continuation Timer remains active and its live countdown is displayed alongside the Usage Snapshot.
+          covers:
+            - US-2.AC-3
+            - US-2.AC-4
+          approved_content_hash: fd15d46f9489f318bbe80ef608c3a4b8e8f86b581fe97eeae8b56c8d611c9326
+          approved_parent_hash: 2e990f95a8f27f69d2cf392a9b96807ad66bd1b9ffb7ebcb6f0010872c3696f5
+          evidence:
+            tests:
+                - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > AT-4 deduplicates Continuation Timer and keeps live countdown alongside Usage Snapshot
+            recorded_at: "2026-08-31T21:56:18Z"
+    - id: US-3
+      kind: story
+      title: Resume Paused Agents in Order
+      body: After the Continuation Timer expires, resume affected Paused Agent instances in Subagent-first order while minimizing additional model usage.
+      status: done
+      paths:
+        - src/index.ts
+        - src/paused.ts
+        - tests/integration.test.ts
+        - tests/paused.test.ts
+      acceptance_criteria:
+        - id: US-3.AC-1
+          given: the Continuation Timer has expired and paused Subagents are known
+          when: continuation begins
+          then: Subagents receive Continuation Signals first
+        - id: US-3.AC-2
+          given: Continuation Signals for paused Subagents have been dispatched
+          when: the main Paused Agent is also paused
+          then: the main Paused Agent receives its Continuation Signal afterward
+        - id: US-3.AC-3
+          given: the Continuation Timer expires but no Paused Agent remains
+          when: current state is checked
+          then: no Continuation Signal or model request is triggered
+        - id: US-3.AC-4
+          given: a Paused Agent receives a Continuation Signal
+          when: execution continues
+          then: its Continuation Adapter preserves existing session context and work state without human intervention
+      depends_on:
+        - target: CC-1
+          pinned_hash: 339daacb5e5fc6fd62d71810b4525097aebbc64d040720fcaca7619747b12d02
+        - target: CC-3
+          pinned_hash: f76e07e585410a8a81dee45450204df72f5c10b0c3befef7fdba13709894b544
+      approved_content_hash: 1c21032297407dd924932ac0b02edbac5d9935b3f9e0c83d30ae83eca1eb025c
+      children:
+        - id: AS-3
+          kind: arch
+          title: Ordered Agent Continuation Architecture
+          body: Track Paused Agent state in the current Pi process and, after Continuation Timer expiry, revalidate liveness and dispatch the Continuation Signal in deterministic Subagent-first order through each existing Continuation Adapter.
+          approved_content_hash: da5580520dd1b854a0153b1dad4787128323846bf9819666c50a29e56b2251c1
+          approved_parent_hash: 1c21032297407dd924932ac0b02edbac5d9935b3f9e0c83d30ae83eca1eb025c
+          children:
+            - id: DD-5
+              kind: detail_design
+              title: Paused Agent Registry and Ordering
+              body: Maintain ephemeral process-local records for Paused Agent instances, their role, Continuation Adapter, and current paused state. Remove settled entries and return a stable order with Subagents before the main Paused Agent.
+              approved_content_hash: 354feda4cdf948a775f039bd3852bcde877c5a742051206247b0192b9ca5492e
+              approved_parent_hash: da5580520dd1b854a0153b1dad4787128323846bf9819666c50a29e56b2251c1
+              children:
+                - id: UT-5
+                  kind: unit_test
+                  title: Paused Agent Registration, Removal, and Ordering
+                  body: Cover duplicate registration, state updates, settled removal, stable Subagent ordering, main Paused Agent placement, and an empty registry without persisting records.
+                  approved_content_hash: da9d87efeaee3d2804b74d2b3e57733999b7cf3b157ae6445b26cc1f7039860b
+                  approved_parent_hash: 354feda4cdf948a775f039bd3852bcde877c5a742051206247b0192b9ca5492e
+                  evidence:
+                    tests:
+                        - tests/paused.test.ts::Paused Agent Registry and Ordering > UT-5 registers once, updates state, and preserves stable Subagent order
+                        - tests/paused.test.ts::Paused Agent Registry and Ordering > UT-5 removes settled Paused Agent records and clears without persistence
+                        - tests/paused.test.ts::Paused Agent Registry and Ordering > UT-5 keeps active Continuation Adapters alive without propagating failures
+                    recorded_at: "2026-08-31T22:45:35Z"
+            - id: DD-6
+              kind: detail_design
+              title: Efficient Continuation Dispatcher
+              body: Revalidate each Paused Agent immediately before dispatch, invoke its existing Continuation Adapter once, process Subagents before the main Paused Agent, and skip dispatch entirely when no Paused Agent remains.
+              approved_content_hash: 2ab3bd93a2dfe15dd0e865c9fd7a87e3a2fe214f2d4f3f2763d728b581e7e3a3
+              approved_parent_hash: da5580520dd1b854a0153b1dad4787128323846bf9819666c50a29e56b2251c1
+              children:
+                - id: UT-6
+                  kind: unit_test
+                  title: Ordered Dispatch, No-Op, and Minimal Triggering
+                  body: Cover mixed live and settled entries, Subagent-first calls, main Paused Agent sequencing, one Continuation Signal per Paused Agent, Continuation Adapter failures, preserved session binding, and zero calls for an empty registry.
+                  approved_content_hash: 34cdb08eb5ac4bd4e64e43afe84ddb54907655a9a93088c639011d73d153a77d
+                  approved_parent_hash: 2ab3bd93a2dfe15dd0e865c9fd7a87e3a2fe214f2d4f3f2763d728b581e7e3a3
+                  evidence:
+                    tests:
+                        - tests/paused.test.ts::Efficient Continuation Dispatcher > UT-6 dispatches live Subagents before main Paused Agent with one Continuation Signal each
+                        - tests/paused.test.ts::Efficient Continuation Dispatcher > UT-6 revalidates current state, skips settled entries, and performs empty no-op
+                        - tests/paused.test.ts::Efficient Continuation Dispatcher > UT-6 isolates Continuation Adapter failures and preserves session-bound closures
+                        - tests/paused.test.ts::Efficient Continuation Dispatcher > UT-6 recognizes only supported quota pause diagnostics
+                    recorded_at: "2026-08-31T22:45:35Z"
+            - id: IT-3
+              kind: integration_test
+              title: Continuation Timer to Agent Continuation
+              body: Use fake Continuation Timer expiry, Paused Agent registrations, Continuation Adapters, and model-call observation. Verify current-state validation, Subagent-first dispatch, later main Paused Agent dispatch, context reuse, and the no-op path.
+              approved_content_hash: 32a3b2d073562d0bb651ba94aea8fea756b0e54c101f34d740c94bf74dbccf7c
+              approved_parent_hash: da5580520dd1b854a0153b1dad4787128323846bf9819666c50a29e56b2251c1
+              evidence:
+                tests:
+                    - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > IT-3 bridges quota-failed Subagent session into ordered continuation
+                recorded_at: "2026-08-31T22:45:35Z"
+        - id: AT-5
+          kind: acceptance_test
+          title: Ordered Paused Agent Continuation
+          body: Expire a Continuation Timer with both Subagents and the main agent registered as Paused Agent instances. Assert that live Subagents receive Continuation Signals first, the main Paused Agent follows, and each existing Continuation Adapter reuses session context.
+          covers:
+            - US-3.AC-1
+            - US-3.AC-2
+            - US-3.AC-4
+          approved_content_hash: ebcd366aed772334f06ad9d5b657fd62f3f3c42f08d6e6e7452ca39c3e07965b
+          approved_parent_hash: 1c21032297407dd924932ac0b02edbac5d9935b3f9e0c83d30ae83eca1eb025c
+          evidence:
+            tests:
+                - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > AT-5 dispatches Continuation Signals to Subagents before main Paused Agent with context reuse
+            recorded_at: "2026-08-31T22:45:35Z"
+        - id: AT-6
+          kind: acceptance_test
+          title: No-Op After State Change
+          body: Remove or resume all Paused Agent instances before the Continuation Timer fires. Assert that expiry dispatches no Continuation Signal and causes no model request.
+          covers:
+            - US-3.AC-3
+          approved_content_hash: 4866289ed7c1f1394e0b51e1837a7c023eff57bf195de16e498e0b0c8d1d5e91
+          approved_parent_hash: 1c21032297407dd924932ac0b02edbac5d9935b3f9e0c83d30ae83eca1eb025c
+          evidence:
+            tests:
+                - tests/integration.test.ts::Pi Lifecycle, Authentication, and Status Integration > AT-6 performs no Continuation Signal or model request after Paused Agent state changes
+            recorded_at: "2026-08-31T22:45:35Z"
