@@ -59,6 +59,14 @@ function formatPercent(value: number): string {
   return `${Math.round(value)}%`;
 }
 
+function formatWindowDuration(windowSeconds: number): string {
+  if (windowSeconds === 604_800) return "week";
+  if (windowSeconds % 604_800 === 0) return `${windowSeconds / 604_800}w`;
+  if (windowSeconds % 86_400 === 0) return `${windowSeconds / 86_400}d`;
+  if (windowSeconds % 3_600 === 0) return `${windowSeconds / 3_600}h`;
+  return `${windowSeconds}s`;
+}
+
 function formatReset(timestampSeconds: number, now: number, options: FormatUsageOptions): string {
   const reset = new Date(timestampSeconds * 1000);
   const current = new Date(now);
@@ -93,8 +101,9 @@ export function formatUsageStatus(
   now: number,
   options: FormatUsageOptions = {},
 ): string {
-  const { fiveHour, weekly } = snapshot.usage;
-  const status = `5h ${formatPercent(fiveHour.usedPercent)} resets ${formatReset(fiveHour.resetAt, now, options)}`
-    + ` | week ${formatPercent(weekly.usedPercent)} resets ${formatReset(weekly.resetAt, now, options)}`;
+  const status = snapshot.usage.windows.map((window) =>
+    `${formatWindowDuration(window.windowSeconds)} ${formatPercent(window.usedPercent)}`
+    + ` resets ${formatReset(window.resetAt, now, options)}`
+  ).join(" | ");
   return snapshot.stale ? `${status} · ${formatCompactAge(now - snapshot.fetchedAt)}` : status;
 }

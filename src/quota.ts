@@ -27,7 +27,7 @@ function isExhausted(window: UsageWindow, nowSeconds: number): boolean {
 
 export function planContinuation(usage: OpenAIUsage, now: number): ContinuationPlan | undefined {
   const nowSeconds = now / 1000;
-  const exhausted = [usage.fiveHour, usage.weekly]
+  const exhausted = usage.windows
     .filter((window) => isExhausted(window, nowSeconds))
     .sort((left, right) => right.resetAt - left.resetAt);
   const blockingWindow = exhausted[0];
