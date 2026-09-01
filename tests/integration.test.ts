@@ -414,6 +414,82 @@ describe("Pi Lifecycle, Authentication, and Status Integration", () => {
     }
   });
 
+  it("AT-7 IT-4 starts all quota-paused sessions before any resumed session settles", async () => {
+    const managerKey = Symbol.for("pi-subagents:manager");
+    const previous = (globalThis as Record<PropertyKey, unknown>)[managerKey];
+    const scheduler = new FakeScheduler();
+    const starts: string[] = [];
+    let resolveFirst!: () => void;
+    let rejectSecond!: (error: Error) => void;
+    const firstSession = {
+      prompt: vi.fn(() => new Promise<void>((resolve) => {
+        starts.push("subagent-1");
+        resolveFirst = resolve;
+      })),
+    };
+    const secondSession = {
+      prompt: vi.fn(() => new Promise<void>((_resolve, reject) => {
+        starts.push("subagent-2");
+        rejectSecond = reject;
+      })),
+    };
+    const records = [
+      {
+        id: "subagent-1",
+        status: "error",
+        error: "The usage limit has been reached" as string | undefined,
+        startedAt: START - 2000,
+        completedAt: START - 1000 as number | undefined,
+        session: firstSession,
+      },
+      {
+        id: "subagent-2",
+        status: "error",
+        error: "The usage limit has been reached" as string | undefined,
+        startedAt: START - 1500,
+        completedAt: START - 500 as number | undefined,
+        session: secondSession,
+      },
+    ];
+    (globalThis as Record<PropertyKey, unknown>)[managerKey] = {
+      getRecord: (id: string) => records.find((record) => record.id === id),
+    };
+
+    try {
+      const transport = vi.fn(async () => exhaustedPayload);
+      const ctx = createContext();
+      const harness = createHarness(createPiOpenAiLimits({ transport, scheduler, now: () => START }));
+      harness.sendUserMessage.mockImplementation(() => { starts.push("main"); });
+      await harness.emit("session_start", ctx);
+
+      for (const record of records) {
+        harness.busEmit("subagents:failed", { id: record.id, error: record.error });
+      }
+      await harness.emit("after_provider_response", ctx, { status: 429, headers: {} });
+      await vi.waitFor(() => expect(scheduler.timeouts.size).toBe(1));
+
+      scheduler.fireTimeout();
+      await vi.waitFor(() => expect(starts).toEqual(["subagent-1", "subagent-2", "main"]));
+      expect(firstSession.prompt).toHaveBeenCalledWith("Continue.");
+      expect(secondSession.prompt).toHaveBeenCalledWith("Continue.");
+      expect(harness.sendUserMessage).toHaveBeenCalledWith("Continue.", { deliverAs: "followUp" });
+      expect(records.map((record) => record.status)).toEqual(["running", "running"]);
+
+      rejectSecond(new Error("second resume failed"));
+      resolveFirst();
+      await vi.waitFor(() => expect(harness.emitted.at(-1)).toMatchObject({
+        name: "openai-limits:continuation",
+        data: {
+          dispatched: ["subagent-1", "main"],
+          failed: [{ id: "subagent-2", error: "second resume failed" }],
+        },
+      }));
+    } finally {
+      if (previous === undefined) delete (globalThis as Record<PropertyKey, unknown>)[managerKey];
+      else (globalThis as Record<PropertyKey, unknown>)[managerKey] = previous;
+    }
+  });
+
   it("IT-1 discards delayed Pi OAuth Access resolution after provider deactivation", async () => {
     let resolveAuth!: (value: { auth: { apiKey: string }; source: string }) => void;
     const deferredAuth = new Promise<{ auth: { apiKey: string }; source: string }>((resolve) => {

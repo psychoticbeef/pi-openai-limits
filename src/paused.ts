@@ -68,7 +68,7 @@ function errorText(error: unknown): string {
 }
 
 export async function dispatchContinuations(registry: PausedAgentRegistry): Promise<ContinuationDispatchResult> {
-  const result: ContinuationDispatchResult = { dispatched: [], failed: [] };
+  const pending: Array<Promise<{ id: string; error?: string }>> = [];
 
   for (const candidate of registry.ordered()) {
     let paused = false;
@@ -84,13 +84,20 @@ export async function dispatchContinuations(registry: PausedAgentRegistry): Prom
 
     registry.remove(candidate.id);
     try {
-      await candidate.continue();
-      result.dispatched.push(candidate.id);
+      pending.push(Promise.resolve(candidate.continue()).then(
+        () => ({ id: candidate.id }),
+        (error: unknown) => ({ id: candidate.id, error: errorText(error) }),
+      ));
     } catch (error) {
-      result.failed.push({ id: candidate.id, error: errorText(error) });
+      pending.push(Promise.resolve({ id: candidate.id, error: errorText(error) }));
     }
   }
 
+  const result: ContinuationDispatchResult = { dispatched: [], failed: [] };
+  for (const outcome of await Promise.all(pending)) {
+    if (outcome.error === undefined) result.dispatched.push(outcome.id);
+    else result.failed.push({ id: outcome.id, error: outcome.error });
+  }
   return result;
 }
 
