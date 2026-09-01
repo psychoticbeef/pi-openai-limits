@@ -66,6 +66,54 @@ describe("Efficient Continuation Dispatcher", () => {
     expect(registry.size).toBe(0);
   });
 
+  it("UT-7 starts every Continuation Adapter before collecting stable outcomes", async () => {
+    const calls: string[] = [];
+    let resolveFirst!: () => void;
+    let rejectSecond!: (error: Error) => void;
+    let resolveMain!: () => void;
+    const registry = new PausedAgentRegistry();
+    registry.register({
+      id: "main",
+      role: "main",
+      isPaused: () => true,
+      continue: () => new Promise<void>((resolve) => {
+        calls.push("main");
+        resolveMain = resolve;
+      }),
+    });
+    registry.register({
+      id: "sub-1",
+      role: "subagent",
+      isPaused: () => true,
+      continue: () => new Promise<void>((resolve) => {
+        calls.push("sub-1");
+        resolveFirst = resolve;
+      }),
+    });
+    registry.register({
+      id: "sub-2",
+      role: "subagent",
+      isPaused: () => true,
+      continue: () => new Promise<void>((_resolve, reject) => {
+        calls.push("sub-2");
+        rejectSecond = reject;
+      }),
+    });
+
+    const dispatch = dispatchContinuations(registry);
+    await vi.waitFor(() => expect(calls).toEqual(["sub-1", "sub-2", "main"]));
+
+    resolveMain();
+    rejectSecond(new Error("second failed"));
+    resolveFirst();
+
+    expect(await dispatch).toEqual({
+      dispatched: ["sub-1", "main"],
+      failed: [{ id: "sub-2", error: "second failed" }],
+    });
+    expect(registry.size).toBe(0);
+  });
+
   it("UT-6 revalidates current state, skips settled entries, and performs empty no-op", async () => {
     const registry = new PausedAgentRegistry();
     const settledAdapter = vi.fn();
